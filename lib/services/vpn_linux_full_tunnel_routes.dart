@@ -33,6 +33,7 @@ class VpnLinuxFullTunnelRoutes {
 
   Future<void> apply({
     required String vlessServerHost,
+    String tunName = kXrayLinuxTunName,
     required Future<int> Function(List<String> argv) runElevatedArgv,
     required Future<int> Function(String shellScript) runElevatedSh,
     void Function(String message)? debugLog,
@@ -62,7 +63,7 @@ class VpnLinuxFullTunnelRoutes {
     final safeIps = serverIps.where(_ipv4Re.hasMatch).toList();
     if (safeIps.isEmpty) return;
 
-    await _waitForTunInterface(debugLog: debugLog);
+    await _waitForTunInterface(tunName: tunName, debugLog: debugLog);
 
     final helper = defaultRouteHelperPath();
     final useHelper = File(helper).existsSync();
@@ -74,7 +75,7 @@ class VpnLinuxFullTunnelRoutes {
         'apply',
         def.via,
         def.device,
-        kXrayLinuxTunName,
+        tunName,
         ...safeIps,
       ];
       code = await runElevatedArgv(argv);
@@ -82,7 +83,7 @@ class VpnLinuxFullTunnelRoutes {
         _undoArgv = <String>[
           helper,
           'undo',
-          kXrayLinuxTunName,
+          tunName,
           def.via,
           def.device,
           ...safeIps,
@@ -92,12 +93,12 @@ class VpnLinuxFullTunnelRoutes {
       final applyLines = <String>[
         for (final ip in safeIps)
           'ip -4 route replace $ip/32 via ${def.via} dev ${def.device}',
-        'ip -4 route replace 0.0.0.0/1 dev $kXrayLinuxTunName',
-        'ip -4 route replace 128.0.0.0/1 dev $kXrayLinuxTunName',
+        'ip -4 route replace 0.0.0.0/1 dev $tunName',
+        'ip -4 route replace 128.0.0.0/1 dev $tunName',
       ];
       final undoLines = <String>[
-        'ip -4 route del 0.0.0.0/1 dev $kXrayLinuxTunName || true',
-        'ip -4 route del 128.0.0.0/1 dev $kXrayLinuxTunName || true',
+        'ip -4 route del 0.0.0.0/1 dev $tunName || true',
+        'ip -4 route del 128.0.0.0/1 dev $tunName || true',
         for (final ip in safeIps) 'ip -4 route del $ip/32 via ${def.via} dev ${def.device} || true',
       ];
       code = await runElevatedSh(applyLines.join(' && '));
@@ -113,7 +114,7 @@ class VpnLinuxFullTunnelRoutes {
       );
     }
 
-    debugLog?.call('VpnLinuxFullTunnel: IPv4 traffic steered via $kXrayLinuxTunName');
+    debugLog?.call('VpnLinuxFullTunnel: IPv4 traffic steered via $tunName');
   }
 
   /// Legacy undo when helper script was missing at apply time.
@@ -206,17 +207,18 @@ class VpnLinuxFullTunnelRoutes {
   }
 
   static Future<void> _waitForTunInterface({
+    String tunName = kXrayLinuxTunName,
     void Function(String message)? debugLog,
   }) async {
     for (var i = 0; i < 40; i++) {
       try {
-        final r = await Process.run('ip', ['link', 'show', kXrayLinuxTunName]);
+        final r = await Process.run('ip', ['link', 'show', tunName]);
         if (r.exitCode == 0 && (r.stdout as String).contains('UP')) {
           return;
         }
       } catch (_) {}
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    debugLog?.call('VpnLinuxFullTunnel: $kXrayLinuxTunName not UP in time; applying routes anyway');
+    debugLog?.call('VpnLinuxFullTunnel: $tunName not UP in time; applying routes anyway');
   }
 }

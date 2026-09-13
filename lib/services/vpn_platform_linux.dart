@@ -859,6 +859,7 @@ class VpnPlatformLinux extends VpnPlatform {
     try {
       await _linuxFullTunnelRoutes.apply(
         vlessServerHost: server,
+        tunName: tunName,
         runElevatedArgv: _runElevatedArgvForRoutes,
         runElevatedSh: _runElevatedShellForRoutes,
         debugLog: debugPrint,
