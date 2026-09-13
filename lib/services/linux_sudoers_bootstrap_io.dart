@@ -34,6 +34,8 @@ List<String> _bundleVpnCmdPaths() {
     if (File(routes).existsSync()) out.add(routes);
     final awg = p.join(dir, 'awg-quick');
     if (File(awg).existsSync()) out.add(awg);
+    final l2tp = p.join(dir, 'asteriaray-l2tp');
+    if (File(l2tp).existsSync()) out.add(l2tp);
   } catch (_) {}
   out.sort();
   return out.where(_safeAbsPath).toList();
