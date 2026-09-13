@@ -4,9 +4,10 @@ import '../models/vpn_protocol.dart';
 import '../l10n/app_localizations.dart';
 import '../widgets/protocol_slide_tabs.dart';
 import 'amnezia_wg_form_screen.dart';
+import 'l2tp_form_screen.dart';
 import 'profile_form_screen.dart';
 
-/// Manual profile creation: swipe VLESS ↔ AmneziaWG, same tabs as home.
+/// Manual profile creation: swipe VLESS ↔ AmneziaWG ↔ L2TP, same tabs as home.
 class ManualProfileScreen extends StatefulWidget {
   const ManualProfileScreen({
     super.key,
@@ -23,12 +24,16 @@ class _ManualProfileScreenState extends State<ManualProfileScreen> {
   late final PageController _pageController;
   final _vlessFormKey = GlobalKey<ProfileFormScreenState>();
   final _awgFormKey = GlobalKey<AmneziaWgFormScreenState>();
+  final _l2tpFormKey = GlobalKey<L2tpFormScreenState>();
 
   @override
   void initState() {
     super.initState();
-    final initialPage =
-        widget.initialProtocol == VpnProtocol.amneziaWg ? 1 : 0;
+    final initialPage = switch (widget.initialProtocol) {
+      VpnProtocol.amneziaWg => 1,
+      VpnProtocol.l2tp => 2,
+      _ => 0,
+    };
     _pageController = PageController(initialPage: initialPage);
   }
 
@@ -55,8 +60,10 @@ class _ManualProfileScreenState extends State<ManualProfileScreen> {
         : _pageController.initialPage;
     if (page == 0) {
       await _vlessFormKey.currentState?.submit();
-    } else {
+    } else if (page == 1) {
       await _awgFormKey.currentState?.submit();
+    } else {
+      await _l2tpFormKey.currentState?.submit();
     }
   }
 
@@ -94,7 +101,7 @@ class _ManualProfileScreenState extends State<ManualProfileScreen> {
                         _pageController.initialPage.toDouble())
                     : _pageController.initialPage.toDouble();
                 return ProtocolSlideTabs(
-                  page: page.clamp(0.0, 1.0),
+                  page: page.clamp(0.0, 2.0),
                   onSelect: _goToPage,
                 );
               },
@@ -113,6 +120,10 @@ class _ManualProfileScreenState extends State<ManualProfileScreen> {
                 ),
                 AmneziaWgFormScreen(
                   key: _awgFormKey,
+                  embedded: true,
+                ),
+                L2tpFormScreen(
+                  key: _l2tpFormKey,
                   embedded: true,
                 ),
               ],
