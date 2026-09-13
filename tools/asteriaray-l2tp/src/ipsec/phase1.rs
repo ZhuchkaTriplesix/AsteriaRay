@@ -12,6 +12,9 @@ pub struct Phase1Session {
     pub nonce_i: Vec<u8>,
     pub nonce_r: Vec<u8>,
     pub sa_bytes: Vec<u8>,
+    pub peer_pub: Vec<u8>,
+    pub last_iv: Vec<u8>,
+    pub cipher_key: Vec<u8>,
     pub keys: Option<Ikev1Keys>,
     pub nat_detected: bool,
     pub psk: Vec<u8>,
@@ -41,6 +44,9 @@ impl Phase1Session {
             nonce_i,
             nonce_r: Vec::new(),
             sa_bytes: Vec::new(),
+            peer_pub: Vec::new(),
+            last_iv: Vec::new(),
+            cipher_key: Vec::new(),
             keys: None,
             nat_detected: false,
             psk,
@@ -152,7 +158,6 @@ impl Phase1Session {
 
         let nat_d_peer = kdf::Ikev1Keys::compute_nat_d(
             self.hash_alg,
-            &self.psk,
             &self.cky_i,
             &self.cky_r,
             &peer_ip_bytes,
@@ -160,7 +165,6 @@ impl Phase1Session {
         );
         let nat_d_local = kdf::Ikev1Keys::compute_nat_d(
             self.hash_alg,
-            &self.psk,
             &self.cky_i,
             &self.cky_r,
             &local_ip_bytes,
@@ -198,6 +202,7 @@ impl Phase1Session {
         let peer_pub = peer_pub_bytes.ok_or("Missing KE payload in Message 4")?;
         let nonce_r = peer_nonce.ok_or("Missing Nonce payload in Message 4")?;
         self.nonce_r = nonce_r;
+        self.peer_pub = peer_pub.clone();
 
         let shared_secret = self.dh.compute_shared_secret(&peer_pub)?;
         let keys = Ikev1Keys::derive(
@@ -209,13 +214,18 @@ impl Phase1Session {
             &self.cky_i,
             &self.cky_r,
         );
+
+        let expanded_key = Ikev1Keys::expand_skeyid_e(self.hash_alg, &keys.skeyid_e, 32);
+        let iv = kdf::compute_phase1_iv(self.hash_alg, &self.dh.public_bytes(), &self.peer_pub);
+        self.cipher_key = expanded_key;
+        self.last_iv = iv[..16].to_vec();
         self.keys = Some(keys);
 
         Ok(())
     }
 
     /// Builds Message 5 (Initiator -> Responder: ID + HASH_I, encrypted)
-    pub fn build_message_5(&self) -> Result<Vec<u8>, &'static str> {
+    pub fn build_message_5(&mut self) -> Result<Vec<u8>, &'static str> {
         let keys = self.keys.as_ref().ok_or("Keys not derived")?;
 
         // ID payload: ID_IPV4_ADDR (1)
@@ -230,14 +240,47 @@ impl Phase1Session {
         let hash_i = keys.compute_hash_i(
             self.hash_alg,
             &self.dh.public_bytes(),
-            &vec![0u8; self.dh.byte_len], // approximate or cached peer pub
+            &self.peer_pub,
             &self.cky_i,
             &self.cky_r,
             &self.sa_bytes,
             &id_body,
         );
 
-        let header = IsakmpHeader::new(
+        // Build unencrypted body of Message 5: ID payload followed by HASH payload
+        let mut unencrypted = Vec::new();
+        let id_len = (4 + id_body.len()) as u16;
+        unencrypted.push(PAYLOAD_HASH);
+        unencrypted.push(0); // Reserved
+        unencrypted.extend_from_slice(&id_len.to_be_bytes());
+        unencrypted.extend_from_slice(&id_body);
+
+        let hash_len = (4 + hash_i.len()) as u16;
+        unencrypted.push(PAYLOAD_NONE);
+        unencrypted.push(0); // Reserved
+        unencrypted.extend_from_slice(&hash_len.to_be_bytes());
+        unencrypted.extend_from_slice(&hash_i);
+
+        // Pad to AES block size (16 bytes)
+        let pad_len = if unencrypted.len() % 16 != 0 {
+            16 - (unencrypted.len() % 16)
+        } else {
+            0
+        };
+        unencrypted.resize(unencrypted.len() + pad_len, 0u8);
+
+        use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+        let enc = Aes256CbcEnc::new_from_slices(&self.cipher_key, &self.last_iv)
+            .map_err(|_| "Invalid key or IV for AES-CBC")?;
+        let mut ciphertext = unencrypted.clone();
+        enc.encrypt_padded_mut::<NoPadding>(&mut ciphertext, unencrypted.len())
+            .map_err(|_| "Encryption failed")?;
+
+        // Update last_iv to the last ciphertext block
+        self.last_iv = ciphertext[ciphertext.len() - 16..].to_vec();
+
+        let mut hdr = IsakmpHeader::new(
             self.cky_i,
             self.cky_r,
             PAYLOAD_ID,
@@ -245,10 +288,51 @@ impl Phase1Session {
             FLAG_ENCRYPTED,
             0,
         );
+        hdr.length = (ISAKMP_HDR_LEN + ciphertext.len()) as u32;
 
-        let mut builder = PayloadBuilder::new();
-        builder.add(PAYLOAD_ID, id_body);
-        builder.add(PAYLOAD_HASH, hash_i);
-        Ok(builder.build(header))
+        let mut out = Vec::with_capacity(hdr.length as usize);
+        hdr.write_to(&mut out);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Processes Message 6 (Responder -> Initiator: ID + HASH_R, encrypted)
+    pub fn handle_message_6(&mut self, buf: &[u8]) -> Result<(), &'static str> {
+        let hdr = IsakmpHeader::parse(buf)?;
+        if hdr.cky_i != self.cky_i || hdr.cky_r != self.cky_r {
+            return Err("Cookie mismatch in Message 6");
+        }
+        eprintln!("[L2TP] Received packet after Message 5: len={}, hdr={:?}, bytes={:02x?}", buf.len(), hdr, buf);
+        if (hdr.flags & FLAG_ENCRYPTED) == 0 {
+            if let Ok(payloads) = parse_payloads(hdr.next_payload, &buf[ISAKMP_HDR_LEN..]) {
+                for p in &payloads {
+                    if p.payload_type == PAYLOAD_NOTIFICATION && p.body.len() >= 8 {
+                        let notify_type = u16::from_be_bytes(p.body[6..8].try_into().unwrap());
+                        eprintln!("[L2TP] Server ISAKMP NOTIFICATION code: {}", notify_type);
+                    }
+                }
+            }
+            return Err("Message 6 is not encrypted");
+        }
+
+        let encrypted_body = &buf[ISAKMP_HDR_LEN..];
+        if encrypted_body.len() % 16 != 0 {
+            return Err("Encrypted body length not multiple of 16");
+        }
+
+        use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
+        type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+        let dec = Aes256CbcDec::new_from_slices(&self.cipher_key, &self.last_iv)
+            .map_err(|_| "Invalid key or IV for AES-CBC")?;
+        let mut decrypted = encrypted_body.to_vec();
+        dec.decrypt_padded_mut::<NoPadding>(&mut decrypted)
+            .map_err(|_| "Decryption of Message 6 failed")?;
+
+        // Update last_iv to last block of Message 6 ciphertext
+        self.last_iv = encrypted_body[encrypted_body.len() - 16..].to_vec();
+
+        let payloads = parse_payloads(hdr.next_payload, &decrypted)?;
+        eprintln!("[L2TP] Message 6 decrypted successfully ({} payloads)", payloads.len());
+        Ok(())
     }
 }

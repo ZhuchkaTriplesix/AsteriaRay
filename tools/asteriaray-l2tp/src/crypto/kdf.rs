@@ -104,12 +104,31 @@ impl Ikev1Keys {
         data.extend_from_slice(cky_r);
         data.extend_from_slice(sa_b);
         data.extend_from_slice(id_i_b);
-        prf(alg, &self.skeyid_a, &data)
+        prf(alg, &self.skeyid, &data)
+    }
+
+    pub fn compute_hash_r(
+        &self,
+        alg: HashAlgorithm,
+        g_xr: &[u8],
+        g_xi: &[u8],
+        cky_r: &[u8; 8],
+        cky_i: &[u8; 8],
+        sa_b: &[u8],
+        id_r_b: &[u8],
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(g_xr.len() + g_xi.len() + 16 + sa_b.len() + id_r_b.len());
+        data.extend_from_slice(g_xr);
+        data.extend_from_slice(g_xi);
+        data.extend_from_slice(cky_r);
+        data.extend_from_slice(cky_i);
+        data.extend_from_slice(sa_b);
+        data.extend_from_slice(id_r_b);
+        prf(alg, &self.skeyid, &data)
     }
 
     pub fn compute_nat_d(
         alg: HashAlgorithm,
-        skeyid_a: &[u8],
         cky_i: &[u8; 8],
         cky_r: &[u8; 8],
         ip: &[u8],
@@ -120,7 +139,26 @@ impl Ikev1Keys {
         data.extend_from_slice(cky_r);
         data.extend_from_slice(ip);
         data.extend_from_slice(&port.to_be_bytes());
-        prf(alg, skeyid_a, &data)
+        match alg {
+            HashAlgorithm::Sha1 => {
+                use sha1::Digest;
+                let mut h = sha1::Sha1::new();
+                h.update(&data);
+                h.finalize().to_vec()
+            }
+            HashAlgorithm::Sha256 => {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(&data);
+                h.finalize().to_vec()
+            }
+            HashAlgorithm::Md5 => {
+                use md5::Digest;
+                let mut h = md5::Md5::new();
+                h.update(&data);
+                h.finalize().to_vec()
+            }
+        }
     }
 
     pub fn expand_keymat(
@@ -152,4 +190,72 @@ impl Ikev1Keys {
         keymat.truncate(needed_len);
         keymat
     }
+
+    pub fn expand_skeyid_e(alg: HashAlgorithm, skeyid_e: &[u8], needed_len: usize) -> Vec<u8> {
+        if needed_len <= skeyid_e.len() {
+            return skeyid_e[..needed_len].to_vec();
+        }
+        let mut key = Vec::new();
+        let mut prev = prf(alg, skeyid_e, &[0]);
+        key.extend_from_slice(&prev);
+        while key.len() < needed_len {
+            prev = prf(alg, skeyid_e, &prev);
+            key.extend_from_slice(&prev);
+        }
+        key.truncate(needed_len);
+        key
+    }
+}
+
+pub fn compute_phase1_iv(alg: HashAlgorithm, g_xi: &[u8], g_xr: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(g_xi.len() + g_xr.len());
+    data.extend_from_slice(g_xi);
+    data.extend_from_slice(g_xr);
+    match alg {
+        HashAlgorithm::Sha1 => {
+            use sha1::Digest;
+            let mut h = sha1::Sha1::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Sha256 => {
+            use sha2::Digest;
+            let mut h = sha2::Sha256::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Md5 => {
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+    }
+}
+
+pub fn compute_phase2_iv(alg: HashAlgorithm, last_phase1_cbc: &[u8], message_id: u32) -> Vec<u8> {
+    let mut data = Vec::with_capacity(last_phase1_cbc.len() + 4);
+    data.extend_from_slice(last_phase1_cbc);
+    data.extend_from_slice(&message_id.to_be_bytes());
+    let digest = match alg {
+        HashAlgorithm::Sha1 => {
+            use sha1::Digest;
+            let mut h = sha1::Sha1::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Sha256 => {
+            use sha2::Digest;
+            let mut h = sha2::Sha256::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Md5 => {
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            h.update(&data);
+            h.finalize().to_vec()
+        }
+    };
+    digest[..16].to_vec()
 }

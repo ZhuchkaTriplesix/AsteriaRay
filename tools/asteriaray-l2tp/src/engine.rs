@@ -46,8 +46,63 @@ impl VpnEngine {
         };
 
         let mut peer_addr = SocketAddr::new(std::net::IpAddr::V4(server_ip), self.config.port);
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let socket = match UdpSocket::bind("0.0.0.0:500").await {
+            Ok(s) => {
+                eprintln!("[L2TP] Bound to local port 500");
+                s
+            }
+            Err(e) => {
+                eprintln!("[L2TP] Could not bind port 500 ({}), using ephemeral port", e);
+                UdpSocket::bind("0.0.0.0:0").await?
+            }
+        };
         let local_addr = socket.local_addr()?;
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            let mark: u32 = 0x22b8;
+            unsafe {
+                let res = libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_MARK,
+                    &mark as *const _ as *const libc::c_void,
+                    std::mem::size_of::<u32>() as libc::socklen_t,
+                );
+                if res == 0 {
+                    eprintln!("[L2TP] Set SO_MARK 0x{:x} on socket", mark);
+                } else {
+                    eprintln!("[L2TP] Warning: failed to set SO_MARK: {}", std::io::Error::last_os_error());
+                }
+            }
+        }
+        let real_local_ip = {
+            let mut detected = None;
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(out) = std::process::Command::new("ip")
+                    .args(["route", "get", &server_ip.to_string(), "mark", "0x22b8"])
+                    .output()
+                {
+                    let s = String::from_utf8_lossy(&out.stdout);
+                    if let Some(src_idx) = s.find("src ") {
+                        let rem = &s[src_idx + 4..];
+                        let ip_str = rem.split_whitespace().next().unwrap_or("");
+                        if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+                            detected = Some(ip);
+                        }
+                    }
+                }
+            }
+            detected.unwrap_or_else(|| match local_addr.ip() {
+                std::net::IpAddr::V4(v4) => v4,
+                _ => Ipv4Addr::new(0, 0, 0, 0),
+            })
+        };
+        let local_addr = SocketAddr::new(std::net::IpAddr::V4(real_local_ip), local_addr.port());
+        eprintln!("[L2TP] Local address for IKE: {}", local_addr);
 
         eprintln!("[L2TP] Initiating IKEv1 Phase 1 to {}", peer_addr);
 
@@ -61,28 +116,33 @@ impl VpnEngine {
 
         // Message 1 ->
         let m1 = p1.build_message_1();
+        eprintln!("[L2TP] Sending Message 1 ({} bytes): {:02x?}", m1.len(), &m1);
         socket.send_to(&m1, peer_addr).await?;
 
         // <- Message 2
         let mut buf = vec![0u8; 4096];
         let (len, from) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        eprintln!("[L2TP] Received Message 2 ({} bytes) from {}", len, from);
         p1.handle_message_2(&buf[..len])?;
 
         // Message 3 ->
         let m3 = p1.build_message_3();
+        eprintln!("[L2TP] Sending Message 3 ({} bytes): {:02x?}", m3.len(), &m3);
         socket.send_to(&m3, from).await?;
 
         // <- Message 4
-        let (len, _) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        let (len, from_m4) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        eprintln!("[L2TP] Received Message 4 ({} bytes) from {}", len, from_m4);
         p1.handle_message_4(&buf[..len])?;
 
         // Message 5 ->
         let m5 = p1.build_message_5()?;
-        socket.send_to(&m5, from).await?;
+        eprintln!("[L2TP] Sending Message 5 ({} bytes)", m5.len());
+        socket.send_to(&m5, from_m4).await?;
 
         // <- Message 6
-        let (len, _) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
-        let _ = len; // Established Phase 1
+        let (len, from_m6) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        p1.handle_message_6(&buf[..len])?;
 
         eprintln!("[L2TP] IKEv1 Phase 1 established! NAT-T: {}", p1.nat_detected);
 
@@ -93,8 +153,25 @@ impl VpnEngine {
 
         // --- IKEv1 Phase 2 (Quick Mode) ---
         let p1_keys = p1.keys.as_ref().ok_or("Missing Phase 1 keys")?;
-        let mut qm = QuickModeSession::new();
-        let qm_m1 = qm.build_message_1(p1_keys, HashAlgorithm::Sha1, p1.cky_i, p1.cky_r);
+        let local_ip_bytes = match local_addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            _ => [0, 0, 0, 0],
+        };
+        let peer_ip_bytes = match peer_addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            _ => [0, 0, 0, 0],
+        };
+
+        let mut qm = QuickModeSession::new(&p1.last_iv, p1.cipher_key.clone(), HashAlgorithm::Sha1);
+        let qm_m1 = qm.build_message_1(
+            p1_keys,
+            HashAlgorithm::Sha1,
+            p1.cky_i,
+            p1.cky_r,
+            p1.nat_detected,
+            local_ip_bytes,
+            peer_ip_bytes,
+        )?;
 
         let qm_m1_send = if p1.nat_detected {
             let mut prepended = vec![0u8; 4]; // Non-ESP marker
@@ -103,10 +180,12 @@ impl VpnEngine {
         } else {
             qm_m1
         };
+        eprintln!("[L2TP] Sending QM Message 1 ({} bytes, NAT-T: {})", qm_m1_send.len(), p1.nat_detected);
         socket.send_to(&qm_m1_send, peer_addr).await?;
 
         // <- Quick Mode Message 2
-        let (len, _) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        let (len, from_qm) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await??;
+        eprintln!("[L2TP] Received QM response ({} bytes) from {}", len, from_qm);
         let qm_resp_buf = if p1.nat_detected && len > 4 && &buf[..4] == &[0, 0, 0, 0] {
             &buf[4..len]
         } else {
@@ -116,7 +195,7 @@ impl VpnEngine {
         let mut esp_ctx = qm.handle_message_2(qm_resp_buf, p1_keys, HashAlgorithm::Sha1)?;
 
         // Quick Mode Message 3 ->
-        let qm_m3 = qm.build_message_3(p1_keys, HashAlgorithm::Sha1, p1.cky_i, p1.cky_r);
+        let qm_m3 = qm.build_message_3(p1_keys, HashAlgorithm::Sha1, p1.cky_i, p1.cky_r)?;
         let qm_m3_send = if p1.nat_detected {
             let mut prepended = vec![0u8; 4];
             prepended.extend_from_slice(&qm_m3);
@@ -124,6 +203,7 @@ impl VpnEngine {
         } else {
             qm_m3
         };
+        eprintln!("[L2TP] Sending QM Message 3 ({} bytes)", qm_m3_send.len());
         socket.send_to(&qm_m3_send, peer_addr).await?;
 
         eprintln!("[L2TP] IKEv1 Phase 2 Quick Mode established! SPI_in={:#x}, SPI_out={:#x}", esp_ctx.spi_in, esp_ctx.spi_out);

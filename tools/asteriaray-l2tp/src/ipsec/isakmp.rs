@@ -151,6 +151,23 @@ impl PayloadBuilder {
         out.extend_from_slice(&body_bytes);
         out
     }
+
+    pub fn build_payloads_bytes(&self) -> Vec<u8> {
+        let mut body_bytes = Vec::new();
+        for (i, p) in self.payloads.iter().enumerate() {
+            let next_type = if i + 1 < self.payloads.len() {
+                self.payloads[i + 1].payload_type
+            } else {
+                PAYLOAD_NONE
+            };
+            let len = (4 + p.body.len()) as u16;
+            body_bytes.push(next_type);
+            body_bytes.push(0); // reserved
+            body_bytes.extend_from_slice(&len.to_be_bytes());
+            body_bytes.extend_from_slice(&p.body);
+        }
+        body_bytes
+    }
 }
 
 pub fn parse_payloads(first_type: u8, mut buf: &[u8]) -> Result<Vec<GenericPayload>, &'static str> {
