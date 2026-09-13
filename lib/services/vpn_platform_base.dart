@@ -28,6 +28,20 @@ abstract class VpnPlatform {
     String? localeCode,
   });
 
+  /// L2TP / IPsec tunnel: Linux standalone Rust daemon [asteriaray-l2tp].
+  Future<void> startL2tpVpn({
+    required String server,
+    required String username,
+    required String password,
+    required String presharedKey,
+    required String profileName,
+    String? profileId,
+    String? dns,
+    String? localeCode,
+  }) async {
+    throw UnsupportedError('L2TP is not supported on this platform');
+  }
+
   Future<void> stopVpn();
 
   /// Native worker alive: Android `:xrayvpn`, Linux Xray [Process].

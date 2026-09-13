@@ -1,4 +1,5 @@
 import 'amnezia_wg_profile.dart';
+import 'l2tp_profile.dart';
 import 'vless_profile.dart';
 import 'vpn_protocol.dart';
 
@@ -39,4 +40,19 @@ final class AmneziaWgStoredVpnProfile extends StoredVpnProfile {
 
   @override
   VpnProtocol get protocol => VpnProtocol.amneziaWg;
+}
+
+final class L2tpStoredVpnProfile extends StoredVpnProfile {
+  L2tpStoredVpnProfile(this.profile);
+
+  final L2tpProfile profile;
+
+  @override
+  String get id => profile.id;
+
+  @override
+  String get name => profile.name;
+
+  @override
+  VpnProtocol get protocol => VpnProtocol.l2tp;
 }

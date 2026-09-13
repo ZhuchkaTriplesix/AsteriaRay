@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/amnezia_wg_profile.dart';
+import '../models/l2tp_profile.dart';
 import '../models/stored_vpn_profile.dart';
 import '../models/vless_profile.dart';
 import '../models/vless_types.dart';
@@ -11,13 +12,14 @@ import 'app_settings_notifier.dart';
 import 'routing_notifier.dart';
 import '../l10n/app_localizations.dart';
 import '../services/amnezia_wg_runner.dart';
+import '../services/l2tp_runner.dart';
 import '../services/vpn_platform.dart';
 import '../services/xray_runner.dart';
 
 enum VpnStatus { disconnected, connecting, connected, error }
 
 /// Which native tunnel matches [VpnStatus.connected] (used to ignore stale [vpnStopped] events).
-enum _ActiveTunnel { none, vless, awg }
+enum _ActiveTunnel { none, vless, awg, l2tp }
 
 class VpnNotifier extends ChangeNotifier {
   VpnNotifier(
@@ -31,7 +33,7 @@ class VpnNotifier extends ChangeNotifier {
     _platform.onVpnStopped = _onNativeVpnStopped;
   }
 
-  /// VLESS vs AmneziaWG teardown is async; a late `vpnStopped:vless` after AWG is up must not clear UI.
+  /// VLESS vs AmneziaWG vs L2TP teardown is async; late event must not clear UI of active tunnel.
   void _onNativeVpnStopped(String event) {
     if (_status == VpnStatus.connecting) {
       return;
@@ -45,6 +47,10 @@ class VpnNotifier extends ChangeNotifier {
       }
     } else if (event == 'vpnStopped:awg') {
       if (_activeTunnel != _ActiveTunnel.awg) {
+        return;
+      }
+    } else if (event == 'vpnStopped:l2tp') {
+      if (_activeTunnel != _ActiveTunnel.l2tp) {
         return;
       }
     }
@@ -111,9 +117,48 @@ class VpnNotifier extends ChangeNotifier {
         case VlessStoredVpnProfile(:final profile):
           await _connectVless(profile);
           return _status == VpnStatus.connected;
+        case L2tpStoredVpnProfile(:final profile):
+          await _connectL2tp(profile);
+          return _status == VpnStatus.connected;
       }
     } finally {
       _connectInFlight = false;
+    }
+  }
+
+  Future<void> _connectL2tp(L2tpProfile profile) async {
+    if (defaultTargetPlatform != TargetPlatform.linux) {
+      _status = VpnStatus.error;
+      _lastError = 'L2TP is currently supported on Linux only';
+      notifyListeners();
+      return;
+    }
+    _status = VpnStatus.connecting;
+    _current = null;
+    _lastError = null;
+    notifyListeners();
+
+    try {
+      await createL2tpRunner()
+          .connect(_platform, profile, localeCode: _localeCode)
+          .timeout(const Duration(minutes: 2));
+      _status = VpnStatus.connected;
+      _activeTunnel = _ActiveTunnel.l2tp;
+      _startStatsTimer();
+      notifyListeners();
+    } on TimeoutException catch (e) {
+      try {
+        await _platform.stopVpn();
+      } catch (_) {}
+      _activeTunnel = _ActiveTunnel.none;
+      _status = VpnStatus.error;
+      _lastError = 'L2TP connection timed out: ${e.message}';
+      notifyListeners();
+    } catch (e) {
+      _activeTunnel = _ActiveTunnel.none;
+      _status = VpnStatus.error;
+      _lastError = e.toString();
+      notifyListeners();
     }
   }
 
