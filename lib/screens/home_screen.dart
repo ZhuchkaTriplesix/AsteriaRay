@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/amnezia_wg_profile.dart';
+import '../models/l2tp_profile.dart';
 import '../models/stored_vpn_profile.dart';
 import '../models/vless_profile.dart';
 import '../models/vpn_protocol.dart';
@@ -21,6 +22,7 @@ import '../notifiers/vpn_notifier.dart';
 import '../widgets/acrylic_toast.dart';
 import '../widgets/protocol_slide_tabs.dart';
 import 'amnezia_wg_form_screen.dart';
+import 'l2tp_form_screen.dart';
 import 'manual_profile_screen.dart';
 import 'profile_form_screen.dart';
 import 'qr_scan_screen.dart';
@@ -88,6 +90,8 @@ class HomeScreen extends StatelessWidget {
                             _openVlessEditor(context, profile: profile.profile);
                           } else if (profile is AmneziaWgStoredVpnProfile) {
                             _openAwgEditor(context, profile: profile.profile);
+                          } else if (profile is L2tpStoredVpnProfile) {
+                            _openL2tpEditor(context, profile: profile.profile);
                           }
                         },
                         onDelete: (profile) => _confirmDeleteProfile(context, profile),
@@ -320,6 +324,11 @@ class HomeScreen extends StatelessWidget {
         await Share.share(profile.toUri(), subject: profile.name);
       case AmneziaWgStoredVpnProfile(:final profile):
         await Share.share(profile.conf, subject: profile.name);
+      case L2tpStoredVpnProfile(:final profile):
+        await Share.share(
+          'L2TP/IPsec Profile\nServer: ${profile.server}\nUsername: ${profile.username}',
+          subject: profile.name,
+        );
     }
   }
 
@@ -385,6 +394,14 @@ class HomeScreen extends StatelessWidget {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => AmneziaWgFormScreen(profile: profile),
+      ),
+    );
+  }
+
+  void _openL2tpEditor(BuildContext context, {L2tpProfile? profile}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => L2tpFormScreen(profile: profile),
       ),
     );
   }
@@ -492,7 +509,11 @@ class _HomeProfileSlides extends StatefulWidget {
 }
 
 class _HomeProfileSlidesState extends State<_HomeProfileSlides> {
-  static const _pages = [VpnProtocol.vless, VpnProtocol.amneziaWg];
+  static const _pages = [
+    VpnProtocol.vless,
+    VpnProtocol.amneziaWg,
+    VpnProtocol.l2tp,
+  ];
 
   PageController? _pageController;
   bool _pageSynced = false;
@@ -502,7 +523,11 @@ class _HomeProfileSlidesState extends State<_HomeProfileSlides> {
     super.didChangeDependencies();
     if (_pageSynced) return;
     final active = context.read<ProfileNotifier>().activeProfile;
-    final initial = active?.protocol == VpnProtocol.amneziaWg ? 1 : 0;
+    final initial = switch (active?.protocol) {
+      VpnProtocol.amneziaWg => 1,
+      VpnProtocol.l2tp => 2,
+      _ => 0,
+    };
     _pageController = PageController(initialPage: initial);
     _pageSynced = true;
   }
@@ -547,7 +572,7 @@ class _HomeProfileSlidesState extends State<_HomeProfileSlides> {
                   ? (controller.page ?? controller.initialPage.toDouble())
                   : controller.initialPage.toDouble();
             return ProtocolSlideTabs(
-              page: page.clamp(0.0, 1.0),
+              page: page.clamp(0.0, 2.0),
               onSelect: _goToPage,
             );
             },
@@ -574,6 +599,17 @@ class _HomeProfileSlidesState extends State<_HomeProfileSlides> {
                   key: const PageStorageKey<String>('home_amnezia'),
                   protocol: VpnProtocol.amneziaWg,
                   profiles: _forProtocol(VpnProtocol.amneziaWg),
+                  activeId: widget.activeId,
+                  onTap: widget.onTap,
+                  onEdit: widget.onEdit,
+                  onDelete: widget.onDelete,
+                ),
+              ),
+              RepaintBoundary(
+                child: _ProtocolProfilePage(
+                  key: const PageStorageKey<String>('home_l2tp'),
+                  protocol: VpnProtocol.l2tp,
+                  profiles: _forProtocol(VpnProtocol.l2tp),
                   activeId: widget.activeId,
                   onTap: widget.onTap,
                   onEdit: widget.onEdit,
@@ -655,35 +691,48 @@ class _ProtocolEmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            if (isVless)
-              SvgPicture.asset(
-                'assets/protocols/vless-logo-dark.svg',
-                width: 56,
-                height: 56,
-                colorFilter: ColorFilter.mode(
-                  theme.colorScheme.onSurface.withOpacity(0.25),
-                  BlendMode.srcIn,
-                ),
-              )
-            else
-              Opacity(
-                opacity: 0.25,
-                child: SvgPicture.asset(
-                  'assets/protocols/amnezia-logo.svg',
+            switch (protocol) {
+              VpnProtocol.vless => SvgPicture.asset(
+                  'assets/protocols/vless-logo-dark.svg',
                   width: 56,
                   height: 56,
+                  colorFilter: ColorFilter.mode(
+                    theme.colorScheme.onSurface.withOpacity(0.25),
+                    BlendMode.srcIn,
+                  ),
                 ),
-              ),
+              VpnProtocol.amneziaWg => Opacity(
+                  opacity: 0.25,
+                  child: SvgPicture.asset(
+                    'assets/protocols/amnezia-logo.svg',
+                    width: 56,
+                    height: 56,
+                  ),
+                ),
+              VpnProtocol.l2tp => Icon(
+                  Icons.shield_outlined,
+                  size: 56,
+                  color: theme.colorScheme.onSurface.withOpacity(0.25),
+                ),
+            },
             const SizedBox(height: 16),
             Text(
-              isVless ? l10n.noVlessConfigs : l10n.noAwgConfigs,
+              switch (protocol) {
+                VpnProtocol.vless => l10n.noVlessConfigs,
+                VpnProtocol.amneziaWg => l10n.noAwgConfigs,
+                VpnProtocol.l2tp => 'No L2TP/IPsec configs',
+              },
               style: theme.textTheme.titleMedium?.copyWith(
                 color: theme.colorScheme.onSurface.withOpacity(0.6),
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              isVless ? l10n.swipeToAwg : l10n.swipeToVless,
+              switch (protocol) {
+                VpnProtocol.vless => l10n.swipeToAwg,
+                VpnProtocol.amneziaWg => l10n.swipeToVless,
+                VpnProtocol.l2tp => 'Swipe left/right to switch protocols',
+              },
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withOpacity(0.4),
               ),
@@ -743,7 +792,12 @@ class _ProfileCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final isAmnezia = profile is AmneziaWgStoredVpnProfile;
+    final isL2tp = profile is L2tpStoredVpnProfile;
     const vlessAccent = Color(0xFF00D9FF);
+    const l2tpAccent = Color(0xFFA855F7);
+    final accentColor = isAmnezia
+        ? _AmneziaBrand.orange
+        : (isL2tp ? l2tpAccent : vlessAccent);
 
     final cardBody = Material(
       color: Theme.of(context).cardColor,
@@ -752,9 +806,7 @@ class _ProfileCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         side: isActive
             ? BorderSide(
-                color: isAmnezia
-                    ? _AmneziaBrand.orange.withOpacity(0.42)
-                    : vlessAccent.withOpacity(0.45),
+                color: accentColor.withOpacity(0.45),
                 width: 1,
               )
             : BorderSide.none,
@@ -768,8 +820,7 @@ class _ProfileCard extends StatelessWidget {
             children: [
               _ProfileSelectBadge(
                 isActive: isActive,
-                isAmnezia: isAmnezia,
-                accent: vlessAccent,
+                accent: accentColor,
                 inactiveSurface: scheme.surface,
                 onSurface: scheme.onSurface,
               ),
@@ -798,6 +849,14 @@ class _ProfileCard extends StatelessWidget {
                               height: 14,
                             ),
                           )
+                        else if (isL2tp)
+                          Icon(
+                            Icons.shield_outlined,
+                            size: 14,
+                            color: isActive
+                                ? l2tpAccent
+                                : l2tpAccent.withOpacity(0.55),
+                          )
                         else
                           SvgPicture.asset(
                             'assets/protocols/vless-logo-dark.svg',
@@ -817,6 +876,8 @@ class _ProfileCard extends StatelessWidget {
                               VlessStoredVpnProfile(:final profile) =>
                                 '${profile.host}:${profile.port}',
                               AmneziaWgStoredVpnProfile(:final profile) =>
+                                profile.endpointHint,
+                              L2tpStoredVpnProfile(:final profile) =>
                                 profile.endpointHint,
                             },
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -857,14 +918,12 @@ class _ProfileCard extends StatelessWidget {
 class _ProfileSelectBadge extends StatelessWidget {
   const _ProfileSelectBadge({
     required this.isActive,
-    required this.isAmnezia,
     required this.accent,
     required this.inactiveSurface,
     required this.onSurface,
   });
 
   final bool isActive;
-  final bool isAmnezia;
   final Color accent;
   final Color inactiveSurface;
   final Color onSurface;
@@ -876,9 +935,7 @@ class _ProfileSelectBadge extends StatelessWidget {
     final icon = Icon(
       isActive ? Icons.check_circle_rounded : Icons.circle_outlined,
       key: ValueKey(isActive),
-      color: isActive
-          ? (isAmnezia ? _AmneziaBrand.orange : accent)
-          : onSurface.withOpacity(0.5),
+      color: isActive ? accent : onSurface.withOpacity(0.5),
     );
 
     return AnimatedContainer(
@@ -890,12 +947,10 @@ class _ProfileSelectBadge extends StatelessWidget {
         shape: BoxShape.circle,
         color: !isActive
             ? inactiveSurface.withOpacity(0.5)
-            : (isAmnezia ? _AmneziaBrand.orange.withOpacity(0.14) : accent.withOpacity(0.2)),
+            : accent.withOpacity(0.18),
         border: isActive
             ? Border.all(
-                color: isAmnezia
-                    ? _AmneziaBrand.orange.withOpacity(0.55)
-                    : accent.withOpacity(0.55),
+                color: accent.withOpacity(0.55),
                 width: 2,
               )
             : null,
@@ -1083,6 +1138,7 @@ class _ConnectionBottomBar extends StatelessWidget {
       VpnStatus.connected => switch (active) {
           VlessStoredVpnProfile() => const Color(0xFF00D9FF),
           AmneziaWgStoredVpnProfile() => _AmneziaBrand.orange,
+          L2tpStoredVpnProfile() => const Color(0xFFA855F7),
           null => const Color(0xFF00D9FF),
         },
       VpnStatus.connecting => const Color(0xFFFFB800),
@@ -1220,9 +1276,11 @@ class _DeleteProfilePreview extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final isAmnezia = profile is AmneziaWgStoredVpnProfile;
+    final isL2tp = profile is L2tpStoredVpnProfile;
     final subtitle = switch (profile) {
       VlessStoredVpnProfile(:final profile) => '${profile.host}:${profile.port}',
       AmneziaWgStoredVpnProfile(:final profile) => profile.endpointHint,
+      L2tpStoredVpnProfile(:final profile) => profile.endpointHint,
     };
 
     return DecoratedBox(
@@ -1252,15 +1310,21 @@ class _DeleteProfilePreview extends StatelessWidget {
                           BlendMode.srcIn,
                         ),
                       )
-                    : SvgPicture.asset(
-                        'assets/protocols/vless-logo-dark.svg',
-                        width: 22,
-                        height: 22,
-                        colorFilter: const ColorFilter.mode(
-                          Color(0xFF00D9FF),
-                          BlendMode.srcIn,
-                        ),
-                      ),
+                    : (isL2tp
+                        ? const Icon(
+                            Icons.shield_outlined,
+                            size: 22,
+                            color: Color(0xFFA855F7),
+                          )
+                        : SvgPicture.asset(
+                            'assets/protocols/vless-logo-dark.svg',
+                            width: 22,
+                            height: 22,
+                            colorFilter: const ColorFilter.mode(
+                              Color(0xFF00D9FF),
+                              BlendMode.srcIn,
+                            ),
+                          )),
               ),
             ),
             const SizedBox(width: 12),
@@ -1273,10 +1337,8 @@ class _DeleteProfilePreview extends StatelessWidget {
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   Text(
                     subtitle,
                     style: theme.textTheme.bodySmall?.copyWith(
@@ -1288,6 +1350,7 @@ class _DeleteProfilePreview extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
@@ -1295,7 +1358,11 @@ class _DeleteProfilePreview extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
-                isAmnezia ? 'AWG' : 'VLESS',
+                switch (profile) {
+                  VlessStoredVpnProfile() => 'VLESS',
+                  AmneziaWgStoredVpnProfile() => 'AWG',
+                  L2tpStoredVpnProfile() => 'L2TP',
+                },
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: scheme.error,
                   fontWeight: FontWeight.w700,

@@ -33,6 +33,10 @@ class VpnPlatformLinux extends VpnPlatform {
   StreamSubscription<List<int>>? _stderrSub;
   StreamSubscription<List<int>>? _stdoutSub;
 
+  Process? _l2tpProcess;
+  StreamSubscription<List<int>>? _l2tpStderrSub;
+  StreamSubscription<List<int>>? _l2tpStdoutSub;
+
   /// Config path passed to `awg-quick down` when stopping AmneziaWG (kernel iface).
   String? _awgConfPath;
 
@@ -52,6 +56,11 @@ class VpnPlatformLinux extends VpnPlatform {
     _stdoutSub?.cancel();
     _stdoutSub = null;
     _process = null;
+    _l2tpStderrSub?.cancel();
+    _l2tpStderrSub = null;
+    _l2tpStdoutSub?.cancel();
+    _l2tpStdoutSub = null;
+    _l2tpProcess = null;
   }
 
   Future<String?> _resolveXray() async {
@@ -100,6 +109,46 @@ class VpnPlatformLinux extends VpnPlatform {
     } catch (_) {}
 
     return null;
+  }
+
+  Future<String?> _resolveL2tp() async {
+    final fromEnv = Platform.environment['ASTERIA_L2TP'];
+    if (fromEnv != null && fromEnv.isNotEmpty) {
+      final f = File(fromEnv);
+      if (await f.exists()) return fromEnv;
+    }
+
+    final exe = File(Platform.resolvedExecutable);
+    final bundle = File(p.join(exe.parent.path, 'asteriaray-l2tp'));
+    if (await bundle.exists()) {
+      return bundle.path;
+    }
+
+    final devBin = File(p.join(Directory.current.path, 'linux', 'asteriaray-l2tp'));
+    if (await devBin.exists()) {
+      return devBin.path;
+    }
+
+    try {
+      final r = await Process.run('which', ['asteriaray-l2tp'], runInShell: false);
+      if (r.exitCode == 0) {
+        final line = (r.stdout as String).trim().split('\n').first.trim();
+        if (line.isNotEmpty) return line;
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  Future<void> _stopL2tpProcess() async {
+    final p = _l2tpProcess;
+    if (p == null) return;
+    _l2tpProcess = null;
+    await _l2tpStderrSub?.cancel();
+    _l2tpStderrSub = null;
+    await _l2tpStdoutSub?.cancel();
+    _l2tpStdoutSub = null;
+    await _killProcBestEffort(p);
   }
 
   /// Standard locations for `ip`, `iptables`, etc. Apps started via `flutter run` often omit `/usr/sbin`.
@@ -710,6 +759,118 @@ class VpnPlatformLinux extends VpnPlatform {
   }
 
   @override
+  Future<void> startL2tpVpn({
+    required String server,
+    required String username,
+    required String password,
+    required String presharedKey,
+    required String profileName,
+    String? profileId,
+    String? dns,
+    String? localeCode,
+  }) async {
+    await stopVpn();
+
+    final binary = await _resolveL2tp();
+    if (binary == null) {
+      throw StateError(
+        'asteriaray-l2tp daemon not found. Run ./tools/build_l2tp_linux.sh or set ASTERIA_L2TP=/path/to/asteriaray-l2tp.',
+      );
+    }
+
+    const tunName = 'asteria-l2tp0';
+    final args = [
+      '--server',
+      server,
+      '--user',
+      username,
+      '--password',
+      password,
+      '--psk',
+      presharedKey,
+      '--tun',
+      tunName,
+    ];
+
+    Process proc;
+    if (await _isUid0()) {
+      proc = await Process.start(binary, args, runInShell: false);
+    } else {
+      try {
+        proc = await Process.start('sudo', ['-n', binary, ...args], runInShell: false);
+      } on ProcessException catch (_) {
+        proc = await Process.start('pkexec', [binary, ...args], runInShell: false);
+      }
+    }
+
+    _l2tpProcess = proc;
+    final completer = Completer<void>();
+
+    _l2tpStderrSub = proc.stderr.listen((bytes) {
+      final s = utf8.decode(bytes, allowMalformed: true);
+      debugPrint('[L2TP stderr] $s');
+    });
+
+    _l2tpStdoutSub = proc.stdout.listen((bytes) {
+      final s = utf8.decode(bytes, allowMalformed: true);
+      debugPrint('[L2TP stdout] $s');
+      for (final line in s.split('\n')) {
+        final trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          try {
+            final json = jsonDecode(trimmed) as Map<String, dynamic>;
+            final event = json['event'] as String?;
+            if (event == 'connected' && !completer.isCompleted) {
+              completer.complete();
+            } else if (event == 'error' && !completer.isCompleted) {
+              completer.completeError(Exception(json['message'] ?? 'L2TP connection failed'));
+            }
+          } catch (_) {}
+        }
+      }
+    });
+
+    proc.exitCode.then((code) {
+      _l2tpProcess = null;
+      _l2tpStderrSub?.cancel();
+      _l2tpStderrSub = null;
+      _l2tpStdoutSub?.cancel();
+      _l2tpStdoutSub = null;
+      unawaited(
+        _linuxFullTunnelRoutes.remove(
+          runElevatedArgv: _runElevatedArgvForRoutes,
+          runElevatedSh: _runElevatedShellForRoutes,
+          debugLog: debugPrint,
+        ),
+      );
+      onVpnStopped?.call('vpnStopped:l2tp');
+      if (!completer.isCompleted) {
+        completer.completeError(Exception('L2TP daemon exited with code $code'));
+      }
+    });
+
+    try {
+      await completer.future.timeout(const Duration(seconds: 40));
+    } catch (e) {
+      await _stopL2tpProcess();
+      rethrow;
+    }
+
+    try {
+      await _linuxFullTunnelRoutes.apply(
+        vlessServerHost: server,
+        tunName: tunName,
+        runElevatedArgv: _runElevatedArgvForRoutes,
+        runElevatedSh: _runElevatedShellForRoutes,
+        debugLog: debugPrint,
+      );
+    } catch (e) {
+      await _stopL2tpProcess();
+      rethrow;
+    }
+  }
+
+  @override
   Future<void> stopVpn() async {
     await _linuxFullTunnelRoutes.remove(
       runElevatedArgv: _runElevatedArgvForRoutes,
@@ -717,14 +878,15 @@ class VpnPlatformLinux extends VpnPlatform {
       debugLog: debugPrint,
     );
     await _stopXraySidecarProcess();
+    await _stopL2tpProcess();
     await _awgQuickDown();
   }
 
   @override
-  Future<bool> isTunnelProcessRunning() async => _process != null;
+  Future<bool> isTunnelProcessRunning() async => _process != null || _l2tpProcess != null;
 
   @override
-  Future<bool> isVpnTunnelEstablished() async => _process != null;
+  Future<bool> isVpnTunnelEstablished() async => _process != null || _l2tpProcess != null;
 
   @override
   Future<String?> getLastVlessStartError() async => null;
