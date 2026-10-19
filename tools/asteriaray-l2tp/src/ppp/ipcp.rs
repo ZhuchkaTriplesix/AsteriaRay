@@ -58,6 +58,46 @@ impl IpcpPacket {
         Self::new(IPCP_CODE_CONF_REQ, identifier, data)
     }
 
+    /// Like `build_conf_req`, but a `None` DNS option is omitted from the request
+    /// (used after the server has Conf-Rejected it).
+    pub fn build_conf_req_opt(
+        identifier: u8,
+        ip: Ipv4Addr,
+        dns1: Option<Ipv4Addr>,
+        dns2: Option<Ipv4Addr>,
+    ) -> Self {
+        let mut data = Vec::new();
+        data.push(IPCP_OPT_IP_ADDR);
+        data.push(6);
+        data.extend_from_slice(&ip.octets());
+        if let Some(d) = dns1 {
+            data.push(IPCP_OPT_PRIMARY_DNS);
+            data.push(6);
+            data.extend_from_slice(&d.octets());
+        }
+        if let Some(d) = dns2 {
+            data.push(IPCP_OPT_SECONDARY_DNS);
+            data.push(6);
+            data.extend_from_slice(&d.octets());
+        }
+        Self::new(IPCP_CODE_CONF_REQ, identifier, data)
+    }
+
+    /// Option types listed in a Conf-Reject packet.
+    pub fn option_types(&self) -> Vec<u8> {
+        let mut types = Vec::new();
+        let mut rem = &self.data[..];
+        while rem.len() >= 2 {
+            let l = rem[1] as usize;
+            if l < 2 || l > rem.len() {
+                break;
+            }
+            types.push(rem[0]);
+            rem = &rem[l..];
+        }
+        types
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let len = (4 + self.data.len()) as u16;
         let mut buf = Vec::with_capacity(len as usize);

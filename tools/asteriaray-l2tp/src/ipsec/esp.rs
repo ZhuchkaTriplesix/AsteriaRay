@@ -117,18 +117,20 @@ impl EspContext {
             return Err("ESP packet shorter than header + ICV");
         }
 
+        let spi = u32::from_be_bytes(packet[0..4].try_into().unwrap());
+        if spi != self.spi_in {
+            eprintln!("[L2TP] Mismatched incoming ESP SPI: got 0x{:08x}, expected 0x{:08x}", spi, self.spi_in);
+            return Err("Unexpected incoming ESP SPI");
+        }
+
         let signed_len = packet.len() - icv_len;
         let signed_data = &packet[..signed_len];
         let received_icv = &packet[signed_len..];
 
         let expected_icv = self.compute_icv(&self.auth_key_in, signed_data);
         if received_icv != expected_icv.as_slice() {
+            eprintln!("[L2TP] ESP ICV mismatch! expected {:02x?}, got {:02x?}", expected_icv, received_icv);
             return Err("ESP ICV authentication failed");
-        }
-
-        let spi = u32::from_be_bytes(packet[0..4].try_into().unwrap());
-        if spi != self.spi_in {
-            return Err("Unexpected incoming ESP SPI");
         }
 
         let iv = &packet[8..24];

@@ -166,9 +166,10 @@ pub fn challenge_hash(
     let mut sha1 = Sha1::new();
     sha1.update(peer_challenge);
     sha1.update(authenticator_challenge);
-    // RFC 2759: userName with any domain prefix removed
+    // RFC 2759: userName with any domain prefix removed and realm/hub suffix removed
     let stripped = username.split('\\').last().unwrap_or(username);
-    sha1.update(stripped.as_bytes());
+    let logon_name = stripped.split('@').next().unwrap_or(stripped);
+    sha1.update(logon_name.as_bytes());
     let full = sha1.finalize();
     let mut res = [0u8; 8];
     res.copy_from_slice(&full[..8]);
@@ -217,9 +218,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nt_password_hash() {
-        let hash = nt_password_hash("clientPass");
-        // Known test vector
-        assert_eq!(hash.len(), 16);
+    fn test_rfc2759_vector() {
+        let user = "User";
+        let pass = "clientPass";
+        let auth_chal = [
+            0x5B, 0x5D, 0x7C, 0x7D, 0x7B, 0x3F, 0x2F, 0x3E,
+            0x3C, 0x2C, 0x60, 0x21, 0x32, 0x26, 0x26, 0x28,
+        ];
+        let peer_chal = [
+            0x21, 0x40, 0x23, 0x24, 0x25, 0x5E, 0x26, 0x2A,
+            0x28, 0x29, 0x5F, 0x2B, 0x3A, 0x33, 0x7C, 0x7E,
+        ];
+
+        let pwd_hash = nt_password_hash(pass);
+        let expected_pwd_hash = [
+            0x44, 0xEB, 0xBA, 0x8D, 0x53, 0x12, 0xB8, 0xD6,
+            0x11, 0x47, 0x44, 0x11, 0xF5, 0x69, 0x89, 0xAE,
+        ];
+        assert_eq!(pwd_hash, expected_pwd_hash, "NT password hash mismatch");
+
+        let chal_8 = challenge_hash(&peer_chal, &auth_chal, user);
+        let expected_chal_8 = [0xD0, 0x2E, 0x43, 0x86, 0xBC, 0xE9, 0x12, 0x26];
+        assert_eq!(chal_8, expected_chal_8, "Challenge hash mismatch");
+
+        let nt_resp = challenge_response(chal_8, pwd_hash);
+        let expected_nt_resp = [
+            0x82, 0x30, 0x9E, 0xCD, 0x8D, 0x70, 0x8B, 0x5E,
+            0xA0, 0x8F, 0xAA, 0x39, 0x81, 0xCD, 0x83, 0x54,
+            0x42, 0x33, 0x11, 0x4A, 0x3D, 0x85, 0xD6, 0xDF,
+        ];
+        assert_eq!(nt_resp, expected_nt_resp, "NT-Response mismatch");
     }
 }
+

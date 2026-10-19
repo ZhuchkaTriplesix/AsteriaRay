@@ -103,6 +103,14 @@ impl L2tpControlSession {
         pkt
     }
 
+    /// Reliable keepalive: the peer must answer with a ZLB ack, so silence means a dead session.
+    pub fn build_hello(&mut self) -> L2tpPacket {
+        let mut pkt = L2tpPacket::new_control(self.remote_tunnel_id, 0, self.ns, self.nr);
+        pkt.add_avp(Avp::new(true, AVP_MESSAGE_TYPE, MSG_HELLO.to_be_bytes().to_vec()));
+        self.ns = self.ns.wrapping_add(1);
+        pkt
+    }
+
     pub fn build_stopccn(&mut self) -> L2tpPacket {
         let mut pkt = L2tpPacket::new_control(self.remote_tunnel_id, 0, self.ns, self.nr);
         pkt.add_avp(Avp::new(true, AVP_MESSAGE_TYPE, MSG_STOPCCN.to_be_bytes().to_vec()));
