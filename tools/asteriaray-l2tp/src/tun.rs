@@ -9,7 +9,7 @@ pub struct TunDevice {
 }
 
 impl TunDevice {
-    pub fn create(name: &str, ip: Ipv4Addr, mtu: u16) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn create(name: &str, ip: Ipv4Addr, gateway_ip: Ipv4Addr, mtu: u16) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut config = Configuration::default();
         config.tun_name(name);
         config.mtu(mtu);
@@ -17,9 +17,9 @@ impl TunDevice {
 
         let dev = tun2::create_as_async(&config)?;
 
-        // Configure IP address via `ip addr add <ip>/32 dev <name>`
+        // Configure point-to-point IP address via `ip addr add <ip>/32 peer <gateway_ip> dev <name>`
         let _ = Command::new("ip")
-            .args(["addr", "add", &format!("{}/32", ip), "dev", name])
+            .args(["addr", "add", &format!("{}/32", ip), "peer", &gateway_ip.to_string(), "dev", name])
             .status();
 
         let _ = Command::new("ip")

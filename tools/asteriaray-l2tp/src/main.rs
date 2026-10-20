@@ -17,7 +17,20 @@ use engine::VpnEngine;
 
 #[tokio::main]
 async fn main() {
-    let config = AppConfig::parse();
+    let mut base_config = AppConfig::parse();
+
+    let stdin_line = if base_config.secrets_stdin {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        Some(line).filter(|l| !l.trim().is_empty())
+    } else {
+        None
+    };
+    if let Err(e) = base_config.load_secrets(stdin_line.as_deref()) {
+        eprintln!("[L2TP] Error: {}", e);
+        println!("{}", serde_json::json!({ "event": "error", "message": e }));
+        std::process::exit(1);
+    }
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
@@ -28,8 +41,11 @@ async fn main() {
         shutdown_clone.store(true, Ordering::Relaxed);
     });
 
-    let engine = VpnEngine::new(config, shutdown);
-    if let Err(e) = engine.run().await {
+    eprintln!("[L2TP] Authenticating with user: '{}'", base_config.user);
+    let engine = VpnEngine::new(base_config, shutdown);
+    let last_err = engine.run().await.err();
+
+    if let Some(e) = last_err {
         eprintln!("[L2TP] Error: {}", e);
         let err_event = serde_json::json!({
             "event": "error",
@@ -39,3 +55,4 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
