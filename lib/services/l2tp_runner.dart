@@ -28,6 +28,8 @@ final class L2tpRunnerLinux implements L2tpRunner {
       profileName: profile.name,
       profileId: profile.id,
       dns: profile.dns,
+      routes: profile.routeList,
+      dnsDomains: profile.dnsDomainList,
       localeCode: localeCode,
     );
   }

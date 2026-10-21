@@ -8,6 +8,8 @@ const kXrayLinuxTunName = 'xray0';
 
 final _ipv4Re = RegExp(r'^(\d{1,3}\.){3}\d{1,3}$');
 final _ifaceRe = RegExp(r'^[a-zA-Z0-9._-]+$');
+final _cidrRe = RegExp(r'^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$');
+final _domainRe = RegExp(r'^~?[a-zA-Z0-9._-]+$');
 
 class _Ipv4DefaultRoute {
   const _Ipv4DefaultRoute({required this.via, required this.device});
@@ -34,6 +36,10 @@ class VpnLinuxFullTunnelRoutes {
   Future<void> apply({
     required String vlessServerHost,
     String tunName = kXrayLinuxTunName,
+    bool manageDns = false,
+    List<String> dnsServers = const [],
+    List<String> routes = const [],
+    List<String> dnsDomains = const [],
     required Future<int> Function(List<String> argv) runElevatedArgv,
     required Future<int> Function(String shellScript) runElevatedSh,
     void Function(String message)? debugLog,
@@ -65,6 +71,11 @@ class VpnLinuxFullTunnelRoutes {
 
     await _waitForTunInterface(tunName: tunName, debugLog: debugLog);
 
+    final safeRoutes = routes.where(_cidrRe.hasMatch).toList();
+    final safeDomains = dnsDomains
+        .where(_domainRe.hasMatch)
+        .map((d) => d.startsWith('~') ? d : '~$d')
+        .toList();
     final helper = defaultRouteHelperPath();
     final useHelper = File(helper).existsSync();
 
@@ -77,6 +88,11 @@ class VpnLinuxFullTunnelRoutes {
         def.device,
         tunName,
         ...safeIps,
+        if (manageDns) 'manage-dns',
+        // Consumed by the helper only for `apply`; DNS pushed by the VPN server (e.g. L2TP IPCP).
+        ...dnsServers.where(_ipv4Re.hasMatch).map((d) => 'dns=$d'),
+        ...safeRoutes.map((r) => 'route=$r'),
+        ...safeDomains.map((d) => 'dns-domain=$d'),
       ];
       code = await runElevatedArgv(argv);
       if (code == 0) {
@@ -87,18 +103,23 @@ class VpnLinuxFullTunnelRoutes {
           def.via,
           def.device,
           ...safeIps,
+          ...safeRoutes.map((r) => 'route=$r'),
         ];
       }
     } else {
       final applyLines = <String>[
         for (final ip in safeIps)
           'ip -4 route replace $ip/32 via ${def.via} dev ${def.device}',
-        'ip -4 route replace 0.0.0.0/1 dev $tunName',
-        'ip -4 route replace 128.0.0.0/1 dev $tunName',
+        if (safeRoutes.isEmpty) ...[
+          'ip -4 route replace 0.0.0.0/1 dev $tunName',
+          'ip -4 route replace 128.0.0.0/1 dev $tunName',
+        ] else
+          for (final r in safeRoutes) 'ip -4 route replace $r dev $tunName',
       ];
       final undoLines = <String>[
         'ip -4 route del 0.0.0.0/1 dev $tunName || true',
         'ip -4 route del 128.0.0.0/1 dev $tunName || true',
+        for (final r in safeRoutes) 'ip -4 route del $r dev $tunName || true',
         for (final ip in safeIps) 'ip -4 route del $ip/32 via ${def.via} dev ${def.device} || true',
       ];
       code = await runElevatedSh(applyLines.join(' && '));

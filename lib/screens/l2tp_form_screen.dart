@@ -32,6 +32,8 @@ class L2tpFormScreenState extends State<L2tpFormScreen>
   late final TextEditingController _username;
   late final TextEditingController _password;
   late final TextEditingController _psk;
+  late final TextEditingController _routes;
+  late final TextEditingController _dnsDomains;
   bool _obscurePassword = true;
   bool _obscurePsk = true;
 
@@ -47,6 +49,8 @@ class L2tpFormScreenState extends State<L2tpFormScreen>
     _username = TextEditingController(text: p?.username ?? '');
     _password = TextEditingController(text: p?.password ?? '');
     _psk = TextEditingController(text: p?.presharedKey ?? '');
+    _routes = TextEditingController(text: p?.routes ?? '');
+    _dnsDomains = TextEditingController(text: p?.dnsDomains ?? '');
   }
 
   @override
@@ -56,6 +60,8 @@ class L2tpFormScreenState extends State<L2tpFormScreen>
     _username.dispose();
     _password.dispose();
     _psk.dispose();
+    _routes.dispose();
+    _dnsDomains.dispose();
     super.dispose();
   }
 
@@ -120,6 +126,8 @@ class L2tpFormScreenState extends State<L2tpFormScreen>
       username: _username.text.trim(),
       password: _password.text,
       presharedKey: _psk.text,
+      routes: _routes.text.trim(),
+      dnsDomains: _dnsDomains.text.trim(),
     );
 
     final notifier = context.read<ProfileNotifier>();
@@ -239,6 +247,41 @@ class L2tpFormScreenState extends State<L2tpFormScreen>
               }
               return null;
             },
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Split tunnel (optional)',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _routes,
+            minLines: 1,
+            maxLines: 3,
+            decoration: _fieldDecoration(
+              context,
+              labelText: 'Networks through VPN (CIDR)',
+              prefixIcon: Icons.alt_route_rounded,
+              hintText: '172.16.0.0/12, 10.0.0.0/8',
+              helperText: 'Empty = all traffic goes through the VPN',
+            ),
+            validator: (v) {
+              final bad = L2tpProfile.firstInvalidRoute(v ?? '');
+              return bad == null ? null : 'Invalid network: $bad';
+            },
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _dnsDomains,
+            decoration: _fieldDecoration(
+              context,
+              labelText: 'Domains resolved by VPN DNS',
+              prefixIcon: Icons.language_rounded,
+              hintText: 'corp.example.com',
+              helperText: 'Empty = all DNS queries use the VPN DNS',
+            ),
           ),
         ],
       ),

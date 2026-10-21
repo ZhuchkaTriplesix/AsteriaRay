@@ -52,6 +52,38 @@ void main() {
     });
   });
 
+  group('L2tpProfile split tunnel', () {
+    test('routes and domains round-trip and parse', () {
+      final profile = L2tpProfile(
+        id: 'a',
+        name: 'n',
+        server: 's',
+        username: 'u',
+        password: 'p',
+        presharedKey: 'k',
+        routes: '172.16.0.0/12, 10.0.0.0/8\n192.168.1.0/24',
+        dnsDomains: 'corp.example.com',
+      );
+      final restored = L2tpProfile.fromJson(profile.toJson());
+      expect(restored.routeList, ['172.16.0.0/12', '10.0.0.0/8', '192.168.1.0/24']);
+      expect(restored.dnsDomainList, ['corp.example.com']);
+    });
+
+    test('old profiles without the new fields stay full-tunnel', () {
+      final restored = L2tpProfile.fromMap({'id': 'a', 'server': 's'});
+      expect(restored.routeList, isEmpty);
+      expect(restored.dnsDomainList, isEmpty);
+    });
+
+    test('validates CIDR entries', () {
+      expect(L2tpProfile.firstInvalidRoute(''), isNull);
+      expect(L2tpProfile.firstInvalidRoute('10.0.0.0/8 172.16.0.0/12'), isNull);
+      expect(L2tpProfile.firstInvalidRoute('10.0.0.0/33'), '10.0.0.0/33');
+      expect(L2tpProfile.firstInvalidRoute('300.0.0.0/8'), '300.0.0.0/8');
+      expect(L2tpProfile.firstInvalidRoute('10.0.0.1'), '10.0.0.1');
+    });
+  });
+
   group('StoredProfileCodec with L2TP', () {
     test('encodes and decodes L2tpStoredVpnProfile', () {
       final profile = L2tpProfile(

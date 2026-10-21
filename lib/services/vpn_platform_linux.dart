@@ -34,6 +34,9 @@ class VpnPlatformLinux extends VpnPlatform {
   StreamSubscription<List<int>>? _stdoutSub;
 
   Process? _l2tpProcess;
+
+  /// Bumped on every user-initiated stop; a reconnect loop gives up when it no longer matches.
+  int _l2tpGeneration = 0;
   StreamSubscription<List<int>>? _l2tpStderrSub;
   StreamSubscription<List<int>>? _l2tpStdoutSub;
 
@@ -767,9 +770,14 @@ class VpnPlatformLinux extends VpnPlatform {
     required String profileName,
     String? profileId,
     String? dns,
+    List<String> routes = const [],
+    List<String> dnsDomains = const [],
     String? localeCode,
+    bool isReconnect = false,
   }) async {
-    await stopVpn();
+    if (!isReconnect) _l2tpGeneration++;
+    await _stopVpnKeepingGeneration();
+    final generation = _l2tpGeneration;
 
     final binary = await _resolveL2tp();
     if (binary == null) {
@@ -779,18 +787,8 @@ class VpnPlatformLinux extends VpnPlatform {
     }
 
     const tunName = 'asteria-l2tp0';
-    final args = [
-      '--server',
-      server,
-      '--user',
-      username,
-      '--password',
-      password,
-      '--psk',
-      presharedKey,
-      '--tun',
-      tunName,
-    ];
+    // Credentials go over stdin so they never show up in the process list.
+    final args = ['--server', server, '--secrets-stdin', '--tun', tunName];
 
     Process proc;
     if (await _isUid0()) {
@@ -803,8 +801,14 @@ class VpnPlatformLinux extends VpnPlatform {
       }
     }
 
+    proc.stdin.writeln(
+      jsonEncode({'user': username, 'password': password, 'psk': presharedKey}),
+    );
+    unawaited(proc.stdin.close());
+
     _l2tpProcess = proc;
     final completer = Completer<void>();
+    var l2tpDns = <String>[];
 
     _l2tpStderrSub = proc.stderr.listen((bytes) {
       final s = utf8.decode(bytes, allowMalformed: true);
@@ -821,6 +825,10 @@ class VpnPlatformLinux extends VpnPlatform {
             final json = jsonDecode(trimmed) as Map<String, dynamic>;
             final event = json['event'] as String?;
             if (event == 'connected' && !completer.isCompleted) {
+              final dnsJson = json['dns'];
+              if (dnsJson is List) {
+                l2tpDns = dnsJson.whereType<String>().toList();
+              }
               completer.complete();
             } else if (event == 'error' && !completer.isCompleted) {
               completer.completeError(Exception(json['message'] ?? 'L2TP connection failed'));
@@ -831,10 +839,13 @@ class VpnPlatformLinux extends VpnPlatform {
     });
 
     proc.exitCode.then((code) {
+      // `_stopL2tpProcess` clears `_l2tpProcess` first, so a different value here means the user stopped it.
+      final stoppedByUser = !identical(_l2tpProcess, proc) || generation != _l2tpGeneration;
+      debugPrint('L2TP: daemon exited with code $code (stoppedByUser=$stoppedByUser)');
       _l2tpProcess = null;
-      _l2tpStderrSub?.cancel();
+      // Do not cancel the log subscriptions here: they end with the streams, and cancelling now drops
+      // the daemon's last lines, which are exactly the ones that explain the exit.
       _l2tpStderrSub = null;
-      _l2tpStdoutSub?.cancel();
       _l2tpStdoutSub = null;
       unawaited(
         _linuxFullTunnelRoutes.remove(
@@ -843,10 +854,31 @@ class VpnPlatformLinux extends VpnPlatform {
           debugLog: debugPrint,
         ),
       );
-      onVpnStopped?.call('vpnStopped:l2tp');
       if (!completer.isCompleted) {
         completer.completeError(Exception('L2TP daemon exited with code $code'));
+        onVpnStopped?.call('vpnStopped:l2tp');
+        return;
       }
+      if (stoppedByUser) {
+        onVpnStopped?.call('vpnStopped:l2tp');
+        return;
+      }
+      // The session was up and the daemon died on its own (e.g. dead peer): bring it back.
+      unawaited(
+        _reconnectL2tp(
+          generation: generation,
+          server: server,
+          username: username,
+          password: password,
+          presharedKey: presharedKey,
+          profileName: profileName,
+          profileId: profileId,
+          dns: dns,
+          routes: routes,
+          dnsDomains: dnsDomains,
+          localeCode: localeCode,
+        ),
+      );
     });
 
     try {
@@ -860,6 +892,10 @@ class VpnPlatformLinux extends VpnPlatform {
       await _linuxFullTunnelRoutes.apply(
         vlessServerHost: server,
         tunName: tunName,
+        manageDns: true,
+        dnsServers: l2tpDns,
+        routes: routes,
+        dnsDomains: dnsDomains,
         runElevatedArgv: _runElevatedArgvForRoutes,
         runElevatedSh: _runElevatedShellForRoutes,
         debugLog: debugPrint,
@@ -870,8 +906,56 @@ class VpnPlatformLinux extends VpnPlatform {
     }
   }
 
+  Future<void> _reconnectL2tp({
+    required int generation,
+    required String server,
+    required String username,
+    required String password,
+    required String presharedKey,
+    required String profileName,
+    String? profileId,
+    String? dns,
+    List<String> routes = const [],
+    List<String> dnsDomains = const [],
+    String? localeCode,
+  }) async {
+    const maxDelay = Duration(seconds: 60);
+    // The server keeps the dead session for a while; reconnecting at once only collides with it.
+    var delay = const Duration(seconds: 15);
+    while (generation == _l2tpGeneration) {
+      debugPrint('L2TP: connection lost, reconnecting in ${delay.inSeconds}s');
+      await Future<void>.delayed(delay);
+      if (generation != _l2tpGeneration) return;
+      try {
+        await startL2tpVpn(
+          server: server,
+          username: username,
+          password: password,
+          presharedKey: presharedKey,
+          profileName: profileName,
+          profileId: profileId,
+          dns: dns,
+          routes: routes,
+          dnsDomains: dnsDomains,
+          localeCode: localeCode,
+          isReconnect: true,
+        );
+        return;
+      } catch (e) {
+        debugPrint('L2TP: reconnect failed: $e');
+        if (generation != _l2tpGeneration) return;
+        delay = delay * 2 > maxDelay ? maxDelay : delay * 2;
+      }
+    }
+  }
+
   @override
   Future<void> stopVpn() async {
+    _l2tpGeneration++;
+    await _stopVpnKeepingGeneration();
+  }
+
+  Future<void> _stopVpnKeepingGeneration() async {
     await _linuxFullTunnelRoutes.remove(
       runElevatedArgv: _runElevatedArgvForRoutes,
       runElevatedSh: _runElevatedShellForRoutes,

@@ -37,6 +37,8 @@ abstract class VpnPlatform {
     required String profileName,
     String? profileId,
     String? dns,
+    List<String> routes = const [],
+    List<String> dnsDomains = const [],
     String? localeCode,
   }) async {
     throw UnsupportedError('L2TP is not supported on this platform');
