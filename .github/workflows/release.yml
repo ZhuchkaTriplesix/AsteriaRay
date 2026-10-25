@@ -104,6 +104,11 @@ jobs:
           ./tools/fetch_amneziawg_tools_linux.sh
           ./tools/fetch_amneziawg_go_linux.sh
 
+      - name: Build asteriaray-l2tp (Rust)
+        run: |
+          chmod +x tools/build_l2tp_linux.sh
+          ./tools/build_l2tp_linux.sh
+
       - name: Enable Linux desktop
         run: flutter config --enable-linux-desktop
 

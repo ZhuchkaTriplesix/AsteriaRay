@@ -142,6 +142,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amneziawg-go")
     COMPONENT Runtime)
 endif()
 
+# L2TP/IPsec userspace daemon (see tools/build_l2tp_linux.sh).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/asteriaray-l2tp")
+  install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/asteriaray-l2tp"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}"
+    COMPONENT Runtime)
+endif()
+
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)
 

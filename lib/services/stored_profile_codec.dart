@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../models/amnezia_wg_profile.dart';
+import '../models/l2tp_profile.dart';
 import '../models/stored_vpn_profile.dart';
 import '../models/vless_profile.dart';
 
@@ -18,6 +19,11 @@ abstract final class StoredProfileCodec {
       AmneziaWgStoredVpnProfile(:final profile) => {
           'v': 2,
           'protocol': 'amnezia_wg',
+          'data': profile.toMap(),
+        },
+      L2tpStoredVpnProfile(:final profile) => {
+          'v': 2,
+          'protocol': 'l2tp',
           'data': profile.toMap(),
         },
     };
@@ -39,6 +45,10 @@ abstract final class StoredProfileCodec {
         case 'amnezia_wg':
           return AmneziaWgStoredVpnProfile(
             AmneziaWgProfile.fromMap(Map<String, dynamic>.from(data)),
+          );
+        case 'l2tp':
+          return L2tpStoredVpnProfile(
+            L2tpProfile.fromMap(Map<String, dynamic>.from(data)),
           );
         default:
           return null;

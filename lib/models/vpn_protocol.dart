@@ -3,6 +3,6 @@ enum VpnProtocol {
   vless,
   /// WireGuard-compatible config (AmneziaWG, etc.) stored as `.conf` text.
   amneziaWg,
+  l2tp,
   // openvpn,
-  // l2tp,
 }

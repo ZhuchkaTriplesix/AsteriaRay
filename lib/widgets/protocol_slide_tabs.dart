@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-/// Sliding pill tabs: VLESS (0) ↔ AmneziaWG (1), synced with [page] offset.
+/// Sliding pill tabs: VLESS (0) ↔ AmneziaWG (1) ↔ L2TP (2), synced with [page] offset.
 class ProtocolSlideTabs extends StatelessWidget {
   const ProtocolSlideTabs({
     super.key,
@@ -10,20 +10,23 @@ class ProtocolSlideTabs extends StatelessWidget {
     this.padding = const EdgeInsets.fromLTRB(12, 8, 12, 4),
   });
 
-  /// Fractional page offset: 0 = VLESS, 1 = AmneziaWG.
+  /// Fractional page offset: 0 = VLESS, 1 = AmneziaWG, 2 = L2TP.
   final double page;
   final ValueChanged<int> onSelect;
   final EdgeInsets padding;
 
   static const vlessActive = Color(0xFF00D9FF);
   static const amneziaActive = Color(0xFFFFB754);
+  static const l2tpActive = Color(0xFFA855F7);
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final inactive = theme.colorScheme.onSurface.withOpacity(0.45);
-    final vlessWeight = (1 - page).clamp(0.0, 1.0);
-    final awgWeight = page.clamp(0.0, 1.0);
+    final clampedPage = page.clamp(0.0, 2.0);
+    final vlessWeight = (1.0 - clampedPage).clamp(0.0, 1.0);
+    final awgWeight = (1.0 - (clampedPage - 1.0).abs()).clamp(0.0, 1.0);
+    final l2tpWeight = (clampedPage - 1.0).clamp(0.0, 1.0);
 
     return Padding(
       padding: padding,
@@ -36,11 +39,11 @@ class ProtocolSlideTabs extends StatelessWidget {
           padding: const EdgeInsets.all(4),
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final tabWidth = constraints.maxWidth / 2;
+              final tabWidth = constraints.maxWidth / 3;
               return Stack(
                 children: [
                   Positioned(
-                    left: page * tabWidth,
+                    left: clampedPage * tabWidth,
                     top: 0,
                     bottom: 0,
                     width: tabWidth,
@@ -92,6 +95,19 @@ class ProtocolSlideTabs extends StatelessWidget {
                           label: 'AmneziaWG',
                           labelColor:
                               Color.lerp(inactive, amneziaActive, awgWeight)!,
+                        ),
+                      ),
+                      Expanded(
+                        child: _ProtocolSlideTab(
+                          onTap: () => onSelect(2),
+                          icon: Icon(
+                            Icons.shield_outlined,
+                            size: 16,
+                            color: Color.lerp(inactive, l2tpActive, l2tpWeight),
+                          ),
+                          label: 'L2TP',
+                          labelColor:
+                              Color.lerp(inactive, l2tpActive, l2tpWeight)!,
                         ),
                       ),
                     ],
