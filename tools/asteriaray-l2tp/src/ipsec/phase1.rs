@@ -302,7 +302,7 @@ impl Phase1Session {
         if hdr.cky_i != self.cky_i || hdr.cky_r != self.cky_r {
             return Err("Cookie mismatch in Message 6");
         }
-        eprintln!("[L2TP] Received packet after Message 5: len={}, hdr={:?}, bytes={:02x?}", buf.len(), hdr, buf);
+        eprintln!("[L2TP] Received packet after Message 5: len={}", buf.len());
         if (hdr.flags & FLAG_ENCRYPTED) == 0 {
             if let Ok(payloads) = parse_payloads(hdr.next_payload, &buf[ISAKMP_HDR_LEN..]) {
                 for p in &payloads {
