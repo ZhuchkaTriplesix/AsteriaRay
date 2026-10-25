@@ -32,3 +32,6 @@ doc/api/
 .idea
 .metadata
 *.iml
+
+# Built by tools/build_l2tp_linux.sh (CI builds it before flutter build linux)
+linux/asteriaray-l2tp
